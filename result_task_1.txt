@@ -1,0 +1,63 @@
+WITH events_status AS (
+    SELECT *,
+        CASE
+            WHEN EVENT_NAME = 'session_start'
+                OR LAG(EVENT_NAME) OVER win1 = 'session_end'
+                OR (JULIANDAY(EVENT_DTM) - JULIANDAY(LAG(EVENT_DTM) OVER win1)) * 24 * 60 > 30
+                OR DATE(EVENT_DTM) != DATE(LAG(EVENT_DTM) OVER win1)
+                OR ROW_NUMBER() OVER win1 = 1
+            THEN 'start'
+            WHEN LEAD(EVENT_NAME) OVER win1 = 'session_start'
+                OR LEAD(EVENT_NAME) OVER win1 = 'session_end'
+                OR (JULIANDAY(LEAD(EVENT_DTM) OVER win1) - JULIANDAY(EVENT_DTM)) * 24 * 60 > 30
+                OR DATE(LEAD(EVENT_DTM) OVER win1) != DATE(EVENT_DTM)
+                OR LEAD(EVENT_NAME) OVER win1 IS NULL
+            THEN 'end'
+            ELSE 'in_session'
+        END AS SESSION_STATUS,
+        CASE 
+            WHEN USER_ID IN (
+                SELECT USER_ID
+                FROM events
+                WHERE EVENT_NAME = 'purchase'
+            )
+            THEN 1
+            ELSE 0
+        END AS IS_CLIENT
+    FROM events
+    WINDOW win1 AS (PARTITION BY USER_ID ORDER BY EVENT_DTM)
+),
+events_sessions_numbers AS (
+    SELECT *,
+        SUM(
+			CASE 
+			    WHEN SESSION_STATUS = 'start' 
+				THEN 1 
+				ELSE 0 
+			END) OVER (PARTITION BY USER_ID ORDER BY EVENT_DTM) AS SESSION_NUMBER
+    FROM events_status
+),
+events_full_sessions AS(
+    SELECT
+        MIN(EVENT_DTM) AS SESSION_START_DTM,
+        MAX(EVENT_DTM) AS SESSION_END_DTM,
+	    USER_ID,
+	    SESSION_NUMBER,
+        MAX(IS_CLIENT) AS IS_CLIENT,
+        COUNT(
+			CASE 
+			    WHEN EVENT_NAME NOT IN ('session_start', 'session_end') 
+				THEN 1 
+			END) AS EVENT_COUNT
+    FROM events_sessions_numbers
+    GROUP BY USER_ID, SESSION_NUMBER
+    HAVING EVENT_COUNT > 0
+)
+SELECT
+	ROW_NUMBER() OVER (ORDER BY SESSION_START_DTM) AS SESSION_ID,
+	SESSION_START_DTM,
+	SESSION_END_DTM,
+	USER_ID,
+	SESSION_NUMBER,
+	IS_CLIENT
+FROM events_full_sessions

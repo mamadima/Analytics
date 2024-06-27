@@ -1,0 +1,56 @@
+WITH fixed_orders AS (
+    SELECT
+        order_id,
+        order_date,
+        user_id,
+        REPLACE(REPLACE(product_info, '''', '"'), 'False', 'false') AS fixed_product_info
+    FROM orders
+),
+valid_orders AS (
+    SELECT *
+    FROM fixed_orders
+    WHERE json_valid(fixed_product_info)
+),
+parsed_orders AS (
+    SELECT
+        fo.order_id,
+        fo.order_date,
+        fo.user_id,
+        json_extract(value, '$.product_id') AS product_id,
+        json_extract(value, '$.product_price') AS product_price,
+        json_extract(value, '$.product_comission') AS product_commission,
+        json_extract(value, '$.comission_is_percent') AS commission_is_percent,
+        json_extract(value, '$.count') AS quantity
+    FROM
+        valid_orders fo,
+        json_each(fo.fixed_product_info)
+),
+filtered_sales AS (
+    SELECT
+        order_id,
+        product_id
+    FROM
+        sales
+    WHERE
+        is_accepted = True
+        AND is_canceled = False
+)
+SELECT
+    po.user_id AS USER_ID,
+    po.order_id AS ORDER_ID,
+    po.order_date AS ORDER_DATE,
+    SUM(po.product_price * po.quantity) AS ORDER_SUM,
+    SUM(
+        CASE
+            WHEN po.commission_is_percent THEN (po.product_price * po.quantity * po.product_commission / 100.0)
+            ELSE (po.product_commission * po.quantity)
+        END
+    ) AS ORDER_REVENUE,
+    SUM(po.quantity) AS ORDER_QUANTITY,
+    COUNT(DISTINCT po.product_id) AS ORDER_UNIQUE_PRODUCTS
+FROM parsed_orders po
+JOIN filtered_sales fs
+    ON po.order_id = fs.order_id
+    AND po.product_id = fs.product_id
+GROUP BY po.order_id, po.user_id, po.order_date
+ORDER BY USER_ID, ORDER_ID;
